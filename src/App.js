@@ -1,7 +1,14 @@
-import React, { useState, useEffect, useCallback, createContext, useContext } from 'react';
+import React, { useState, useEffect, useCallback, createContext, useContext, useRef } from 'react';
 import axios from 'axios';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+const noCacheConfig = () => ({
+  params: { _t: Date.now() },
+  headers: {
+    'Cache-Control': 'no-cache',
+    Pragma: 'no-cache'
+  }
+});
 
 // Auth Context
 const AuthContext = createContext();
@@ -348,7 +355,7 @@ function ProductsView() {
 
   const loadProducts = async () => {
     try {
-      const response = await axios.get(`${API_URL}/products`);
+      const response = await axios.get(`${API_URL}/products`, noCacheConfig());
       setProducts(response.data.products || []);
     } catch (error) {
       console.error('Error loading products:', error);
@@ -409,8 +416,28 @@ function ProductsView() {
               products.map((product) => (
                 <tr key={product._id} className="hover:bg-gray-50">
                   <td className="px-6 py-4">
-                    <div className="font-medium text-gray-900">{product.name}</div>
-                    <div className="text-sm text-gray-500">{product.description?.substring(0, 50)}...</div>
+                    <div className="flex items-start gap-3">
+                      <div className="w-14 h-14 rounded-lg border border-gray-200 bg-gray-100 overflow-hidden flex-shrink-0">
+                        {product.images?.[0] ? (
+                          <img
+                            src={product.images[0]}
+                            alt={product.name}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-xs text-gray-400">
+                            No image
+                          </div>
+                        )}
+                      </div>
+                      <div>
+                        <div className="font-medium text-gray-900">{product.name}</div>
+                        <div className="text-sm text-gray-500">{product.description?.substring(0, 50)}...</div>
+                        <div className="text-xs text-gray-500 mt-1">
+                          {product.images?.length ? `${product.images.length} image(s)` : '0 images'}
+                        </div>
+                      </div>
+                    </div>
                   </td>
                   <td className="px-6 py-4 capitalize">{product.category}</td>
                   <td className="px-6 py-4 font-semibold">${product.basePrice}</td>
@@ -462,12 +489,12 @@ function ProductsView() {
 function ProductForm({ product, onClose, onSave }) {
   const COUNTRIES = ['USD', 'GBP', 'EUR', 'INR', 'AED', 'AUD', 'CAD', 'JPY', 'CNY', 'SAR'];
   
-  const [formData, setFormData] = useState(product || {
-    name: '',
-    description: '',
-    category: '',
-    basePrice: '',
-    exchangeRates: {
+  const [formData, setFormData] = useState({
+    name: product?.name || '',
+    description: product?.description || '',
+    category: product?.category || '',
+    basePrice: product?.basePrice ?? '',
+    exchangeRates: product?.exchangeRates || {
       USD: 1,
       GBP: 0.79,
       EUR: 0.92,
@@ -479,23 +506,177 @@ function ProductForm({ product, onClose, onSave }) {
       CNY: 7.24,
       SAR: 3.75
     },
-    inStock: true,
-    featured: false
+    inStock: product?.inStock ?? true,
+    featured: product?.featured ?? false
   });
+  const [images, setImages] = useState(product?.images || []);
+  const [imageUrlInput, setImageUrlInput] = useState('');
+  const [imageUploadError, setImageUploadError] = useState('');
+  const [replaceIndex, setReplaceIndex] = useState(null);
+  const [dragImageIndex, setDragImageIndex] = useState(null);
+  const [saveError, setSaveError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const replaceFileInputRef = useRef(null);
+
+  const mergeUniqueImages = (existingImages, newImages) => {
+    const seen = new Set(existingImages);
+    const uniqueToAdd = [];
+
+    newImages.forEach((image) => {
+      if (!seen.has(image)) {
+        seen.add(image);
+        uniqueToAdd.push(image);
+      }
+    });
+
+    return [...existingImages, ...uniqueToAdd];
+  };
+
+  const readFileAsDataUrl = (file) =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('Failed to read file'));
+      reader.readAsDataURL(file);
+    });
+
+  const handleLocalImageUpload = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) {
+      return;
+    }
+
+    const invalidFile = files.find((file) => !file.type.startsWith('image/'));
+    if (invalidFile) {
+      setImageUploadError('Only image files are allowed.');
+      e.target.value = '';
+      return;
+    }
+
+    try {
+      const uploadedImages = await Promise.all(files.map(readFileAsDataUrl));
+      setImages((prevImages) => mergeUniqueImages(prevImages, uploadedImages));
+      setImageUploadError('');
+    } catch (error) {
+      setImageUploadError('Unable to process one or more files.');
+    } finally {
+      e.target.value = '';
+    }
+  };
+
+  const addImageFromUrl = () => {
+    const trimmed = imageUrlInput.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    setImages((prevImages) => (prevImages.includes(trimmed) ? prevImages : [...prevImages, trimmed]));
+    setImageUrlInput('');
+    setImageUploadError('');
+  };
+
+  const removeImage = (indexToRemove) => {
+    setImages((prevImages) => prevImages.filter((_, index) => index !== indexToRemove));
+  };
+
+  const reorderImages = (fromIndex, toIndex) => {
+    if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) {
+      return;
+    }
+
+    setImages((prevImages) => {
+      const nextImages = [...prevImages];
+      const [movedImage] = nextImages.splice(fromIndex, 1);
+      nextImages.splice(toIndex, 0, movedImage);
+      return nextImages;
+    });
+  };
+
+  const handleDragStart = (index) => {
+    setDragImageIndex(index);
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+  };
+
+  const handleDrop = (targetIndex) => {
+    if (dragImageIndex === null) {
+      return;
+    }
+    reorderImages(dragImageIndex, targetIndex);
+    setDragImageIndex(null);
+  };
+
+  const handleDragEnd = () => {
+    setDragImageIndex(null);
+  };
+
+  const openReplacePicker = (index) => {
+    setReplaceIndex(index);
+    if (replaceFileInputRef.current) {
+      replaceFileInputRef.current.click();
+    }
+  };
+
+  const handleReplaceImageUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (replaceIndex === null || !file) {
+      e.target.value = '';
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      setImageUploadError('Only image files are allowed.');
+      e.target.value = '';
+      return;
+    }
+
+    try {
+      const newImage = await readFileAsDataUrl(file);
+      setImages((prevImages) => prevImages.map((image, index) => (index === replaceIndex ? newImage : image)));
+      setImageUploadError('');
+    } catch (error) {
+      setImageUploadError('Unable to replace image.');
+    } finally {
+      setReplaceIndex(null);
+      e.target.value = '';
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setSaveError('');
+    setSaving(true);
     try {
+      const normalizedImages = Array.from(
+        new Set(
+          images
+            .map((image) => (typeof image === 'string' ? image.trim() : ''))
+            .filter(Boolean)
+        )
+      );
+
+      const payload = {
+        ...formData,
+        basePrice: parseFloat(formData.basePrice) || 0,
+        images: normalizedImages,
+        image: normalizedImages[0] || ''
+      };
+
       if (product) {
-        await axios.put(`${API_URL}/products/${product._id}`, formData);
+        await axios.put(`${API_URL}/products/${product._id}`, payload);
       } else {
-        await axios.post(`${API_URL}/products`, formData);
+        await axios.post(`${API_URL}/products`, payload);
       }
-      onSave();
+      await onSave();
       onClose();
     } catch (error) {
       console.error('Error saving product:', error);
-      alert('Error saving product');
+      const message = error.response?.data?.message || 'Error saving product';
+      setSaveError(message);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -580,6 +761,99 @@ function ProductForm({ product, onClose, onSave }) {
             </div>
           </div>
 
+          {/* Images */}
+          <div>
+            <h3 className="text-lg font-semibold mb-4">Product Images</h3>
+            <div className="flex gap-2">
+              <input
+                type="url"
+                value={imageUrlInput}
+                onChange={(e) => setImageUrlInput(e.target.value)}
+                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                placeholder="https://example.com/image.jpg"
+              />
+              <button
+                type="button"
+                onClick={addImageFromUrl}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700"
+              >
+                Add URL
+              </button>
+            </div>
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">Upload from local machine</label>
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={handleLocalImageUpload}
+                className="block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-blue-100 file:text-blue-700 hover:file:bg-blue-200"
+              />
+              <p className="mt-2 text-xs text-gray-500">
+                Uploaded files are stored as data URLs in the product images list.
+              </p>
+              {imageUploadError && (
+                <p className="mt-2 text-sm text-red-600">{imageUploadError}</p>
+              )}
+            </div>
+            <input
+              ref={replaceFileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleReplaceImageUpload}
+            />
+            {images.length > 0 && (
+              <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="col-span-full text-xs text-gray-500">
+                  Drag images to reorder. The first image is used as the primary thumbnail.
+                </div>
+                {images.map((imageUrl, index) => (
+                  <div
+                    key={`${imageUrl}-${index}`}
+                    draggable
+                    onDragStart={() => handleDragStart(index)}
+                    onDragOver={handleDragOver}
+                    onDrop={() => handleDrop(index)}
+                    onDragEnd={handleDragEnd}
+                    className={`rounded-lg border bg-gray-100 overflow-hidden cursor-move ${
+                      index === 0 ? 'border-blue-400' : 'border-gray-200'
+                    }`}
+                  >
+                    <div className="w-full aspect-square">
+                      <img
+                        src={imageUrl}
+                        alt={`Preview ${index + 1}`}
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                    <div className="p-2">
+                      <div className="text-xs text-gray-600 mb-2">
+                        {index === 0 ? 'Primary image' : `Position ${index + 1}`}
+                      </div>
+                      <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => openReplacePicker(index)}
+                        className="flex-1 text-xs bg-blue-600 text-white px-2 py-1 rounded hover:bg-blue-700"
+                      >
+                        Replace
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => removeImage(index)}
+                        className="flex-1 text-xs bg-red-600 text-white px-2 py-1 rounded hover:bg-red-700"
+                      >
+                        Delete
+                      </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           {/* Exchange Rates */}
           <div>
             <h3 className="text-lg font-semibold mb-4">Exchange Rates</h3>
@@ -627,16 +901,23 @@ function ProductForm({ product, onClose, onSave }) {
           </div>
 
           {/* Actions */}
+          {saveError && (
+            <div className="bg-red-100 border border-red-300 text-red-700 px-4 py-3 rounded-lg">
+              {saveError}
+            </div>
+          )}
           <div className="flex gap-4 pt-4 border-t">
             <button
               type="submit"
+              disabled={saving}
               className="flex-1 bg-gradient-to-r from-blue-600 to-blue-500 text-white py-3 rounded-lg font-semibold hover:shadow-lg transition-all"
             >
-              {product ? 'Update' : 'Create'} Product
+              {saving ? 'Saving...' : `${product ? 'Update' : 'Create'} Product`}
             </button>
             <button
               type="button"
               onClick={onClose}
+              disabled={saving}
               className="flex-1 bg-gray-600 text-white py-3 rounded-lg font-semibold hover:bg-gray-700 transition-all"
             >
               Cancel
@@ -930,4 +1211,3 @@ function SettingsView() {
     </div>
   );
 }
-
