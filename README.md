@@ -336,7 +336,7 @@ PORT=3001 npm start
 Username: admin
 Password: admin123
 
-# 5. Start Managing!
+# 5. Start Managing!PORT=3001 npm start
 ```
 
 ---

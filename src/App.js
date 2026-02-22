@@ -1,4 +1,4 @@
-import React, { useState, useEffect, createContext, useContext } from 'react';
+import React, { useState, useEffect, useCallback, createContext, useContext } from 'react';
 import axios from 'axios';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
@@ -11,16 +11,14 @@ function AuthProvider({ children }) {
   const [token, setToken] = useState(localStorage.getItem('adminToken'));
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    if (token) {
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-      fetchUser();
-    } else {
-      setLoading(false);
-    }
-  }, [token]);
+  const logout = useCallback(() => {
+    localStorage.removeItem('adminToken');
+    delete axios.defaults.headers.common['Authorization'];
+    setToken(null);
+    setUser(null);
+  }, []);
 
-  const fetchUser = async () => {
+  const fetchUser = useCallback(async () => {
     try {
       const response = await axios.get(`${API_URL}/auth/me`);
       setUser(response.data.user);
@@ -30,7 +28,16 @@ function AuthProvider({ children }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [logout]);
+
+  useEffect(() => {
+    if (token) {
+      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+      fetchUser();
+    } else {
+      setLoading(false);
+    }
+  }, [token, fetchUser]);
 
   const login = async (username, password) => {
     try {
@@ -49,12 +56,6 @@ function AuthProvider({ children }) {
     }
   };
 
-  const logout = () => {
-    localStorage.removeItem('adminToken');
-    delete axios.defaults.headers.common['Authorization'];
-    setToken(null);
-    setUser(null);
-  };
 
   return (
     <AuthContext.Provider value={{ user, login, logout, loading }}>
@@ -929,3 +930,4 @@ function SettingsView() {
     </div>
   );
 }
+
